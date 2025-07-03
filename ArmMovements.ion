@@ -1,0 +1,392 @@
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+#include <Arduino.h>
+#include <math.h>
+
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+#define PI 3.1415926535897932384626433832795
+#define SERVOMIN 170  // Minimum pulse length for 0 degrees
+#define SERVOMAX 650  // Maximum pulse length for 180 degrees
+#define NUM_STATES 5
+int servoAngles[3];
+int wristRotation = 0;
+int gripperState = 0;
+
+const int heavyServoMin = 500;
+const int heavyServoMax = 2500;
+
+//physical attributes
+const int elbowPin = 8;  // Elbow servo on channel 2
+const int shoulderPin = 10;
+const int basePin = 11;
+const int wristPin = 6;  
+const int gripperPin = 4;
+const int servoCount = 5;
+const double a1 = 8.0;
+const double a2 = 14.0;
+const int delayBetweenSteps = 15;
+double currentAngles[servoCount];
+
+void setup() {
+  Serial.begin(9600);
+  pwm.begin();
+  pwm.setPWMFreq(60);
+  for(int i = 0; i < servoCount; i++){  
+    currentAngles[i] = 90.0;
+  }
+  startPos();
+  delay(2000);
+  //testInverseKinematics();
+}
+
+void loop() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim(); 
+    int values[NUM_STATES];
+    int idx = 0;
+    char *token;
+    char inputBuffer[50];
+    input.toCharArray(inputBuffer, 50);
+   
+    token = strtok(inputBuffer, ",");
+    while (token != NULL && idx < NUM_STATES) {
+      values[idx++] = atoi(token);
+      token = strtok(NULL, ",");
+    }
+
+    if (idx == NUM_STATES) {
+      for (int i = 0; i < 3; i++) {
+        servoAngles[i] = values[i];
+      }
+      wristRotation = values[3];
+      gripperState = values[4];
+      Serial.print("Servo Angles: ");
+      for (int i = 0; i < 3; i++) {
+        Serial.print(servoAngles[i]);
+        Serial.print(" ");
+      }
+      Serial.print(" | Wrist: ");
+      Serial.print(wristRotation);
+      Serial.print(" | Gripper: ");
+      Serial.println(gripperState);
+      setBaseAngle(servoAngles[0]);
+      delay(20);
+      setShoulderAngle(servoAngles[1]);
+      delay(20);
+      setElbowAngle(servoAngles[2]);
+      delay(20);
+      if(wristRotation == 1){
+          //counter
+          rotateCCW();
+
+
+      }else if(wristRotation == -1){
+          //clockwise
+          rotateCW();
+      }
+      else if(wristRotation == 0){
+        stopRotate();
+      }
+      delay(20);
+      //gripper open and close
+      if(gripperState == 1){
+          //counter
+          openGripper();
+          //delay(3000);
+          //stopGripper();
+      }else if(gripperState == -1){
+          //clockwise
+          closeGripper();
+          //delay(3000);
+          //stopGripper();
+      }
+      else if(gripperState == 0){
+          //clockwise
+          //delay(3000);
+          stopGripper();
+      }
+      delay(20);
+    } else {
+      Serial.println("Invalid input length");
+    }
+  }
+}
+
+
+void startPos(){
+  for(int i = 0; i <= 90; i+= 10){
+    setShoulderAngle(i);
+  }
+  delay(3000);
+  for(int j = 180; j >= 90; j -= 10){ 
+    setElbowAngle(j); 
+  }
+  delay(3000);
+  rotateCW();
+  delay(2000);
+  stopRotate();
+  delay(20);
+  rotateCCW();
+  delay(4000);
+  stopRotate();
+  delay(20);
+  rotateCW();
+  delay(2000);
+  stopRotate();
+  delay(20);
+  openGripper();
+  delay(2000);
+  stopGripper();
+  delay(20);
+  closeGripper();
+  delay(2000);
+  stopGripper();
+  delay(20);
+  setBaseAngle(90);
+}
+void setBaseAngle(int angle){
+  int PWM = angle * 3 + SERVOMIN;
+  pwm.setPWM(basePin, 0, PWM);
+  currentAngles[0] = angle;  // Store the logical angle
+  delay(20);
+}
+
+void openGripper(){
+  long openG = 409;  // Approximate value for 1000us
+  pwm.setPWM(gripperPin, 0, openG);  
+  delay(3000);
+  stopGripper();
+}
+
+void closeGripper(){
+  long closeG = 205;  // Approximate value for 1000us
+  pwm.setPWM(gripperPin, 0, closeG);
+}
+
+void stopGripper(){
+  int testPulse = 1480;  
+  int pwmValue = (testPulse * 4096) / 20000;
+  pwm.setPWM(gripperPin, 0, pwmValue);
+}
+
+void rotateCW(){
+  long rotateG = 409;  
+  pwm.setPWM(wristPin, 0, rotateG);  
+}
+
+void rotateCCW(){
+  long rotateG = 205;  
+  pwm.setPWM(wristPin, 0, rotateG);
+}
+
+void stopRotate(){
+  int testPulse = 1480;
+  int pwmValue = (testPulse * 4096) / 20000;
+  pwm.setPWM(wristPin, 0, pwmValue);
+}
+
+void setElbowAngle(int angle){
+  int flippedAngle = 180 - angle;
+  int PWM = flippedAngle * 3 + SERVOMIN;
+  pwm.setPWM(elbowPin, 0, PWM);
+  currentAngles[2] = angle; 
+  delay(20);
+}
+
+void setShoulderAngle(int angle){
+  int range = 2000;
+  int newAngle = (int)(2.44 * angle + 110);
+  float ratio = (float) newAngle / 360.0;
+  int PW = heavyServoMin + (int)(ratio * range);
+  float pwmTicks = ((float)PW / 20000.0) * 4096.0;
+  int finalTicks = (int)pwmTicks;
+  Serial.print("Current Angle : ");
+  Serial.println(newAngle);
+  Serial.print("Current Tick : ");
+  Serial.println(finalTicks);
+  pwm.setPWM(shoulderPin, 0, finalTicks);
+  currentAngles[1] = angle;  // Store current angle
+  delay(200);
+}
+
+int calcElbowAngle(double x, double y, double L1, double L2) {
+  double D = sqrt((x * x) + (y * y));
+
+  if (D > (L1 + L2) || D < fabs(L1 - L2)) {
+    Serial.println("Target is out of reach");
+    return -1;
+  }
+
+  double cos_theta2 = ((x * x) + (y * y) - (L1 * L1) - (L2 * L2)) / (2 * L1 * L2);
+  cos_theta2 = constrain(cos_theta2, -1.0, 1.0);  
+  double theta2 = acos(cos_theta2);
+  int theta2_int = (int)(theta2 * (180/PI));
+  return theta2_int; // in degrees
+}
+
+int calcShoulderAngle(double x, double y, double L1, double L2) {
+  double D = sqrt((x * x) + (y * y));
+ 
+  if (D == 0) {
+    Serial.println("Invalid target at origin");
+    return -1;
+  }
+
+  double alpha = atan2(y, x); 
+  double cos_beta = ((L1 * L1) + (D * D) - (L2 * L2)) / (2 * L1 * D);
+  cos_beta = constrain(cos_beta, -1.0, 1.0);
+  double beta = acos(cos_beta);
+  double theta1 = alpha - beta;
+  int theta1_int = (int)(theta1 * (180/PI));
+  return theta1_int; // in degrees
+}
+
+int angleToPWM(int angle) {
+  return angle * 3 + SERVOMIN;
+}
+
+void rehome(){
+  int shoulderAngle = (int)currentAngles[1];
+  int elbowAngle = (int)currentAngles[2];
+  int shoulderPWM = angleToPWM(shoulderAngle);
+  int elbowPWM = angleToPWM(elbowAngle);
+  for(int pos = shoulderPWM; pos >= 170; pos -=10){
+    pwm.setPWM(shoulderPin, 0, pos);
+    delay(200);
+  }
+  for(int pose = elbowPWM; pose <= 650; pose+= 10){
+    pwm.setPWM(elbowPin, 0, pose);
+    delay(20);
+  }
+}
+void testInverseKinematics() {
+  Serial.println("\n===== Inverse Kinematics Test =====");
+  Serial.println("Testing each position and moving servos...");
+  double testCases[][2] = {
+    {10, 5},
+    {12, 8},
+    {5, 5},
+    {0, 20},
+    {15, 0},
+    {8, 14},
+    {16, 2},
+    {22, 2},
+    {-5, 10}  
+  };
+
+  int numCases = sizeof(testCases) / sizeof(testCases[0]);
+  for (int i = 0; i < numCases; i++) {
+    double x = testCases[i][0];
+    double y = testCases[i][1];
+   
+    Serial.print("\n--- Test Case ");
+    Serial.print(i + 1);
+    Serial.print(" of ");
+    Serial.print(numCases);
+    Serial.print(" ---");
+    Serial.print("\nTesting (x, y) = (");
+    Serial.print(x);
+    Serial.print(", ");
+    Serial.print(y);
+    Serial.println(")");
+
+    int theta2 = calcElbowAngle(x, y, a1, a2);
+    int theta1 = calcShoulderAngle(x, y, a1, a2);
+    if (theta1 != -1 && theta2 != -1) {
+      Serial.print("  Calculated shoulder angle (theta1): ");
+      Serial.println(theta1);
+      Serial.print("  Calculated elbow angle (theta2): ");
+      Serial.println(theta2);
+     
+      Serial.println("  Moving servos to calculated position...");
+     
+      // Move to the calculated position
+      moveShoulderInverse(theta1);
+      delay(500); // Small delay 
+      moveElbowInverse(theta2);
+     
+      Serial.println("  Movement complete!");
+      Serial.println("  Holding position for 3 seconds...");
+      delay(3000); 
+     
+    } else {
+      Serial.println("  Position not reachable - skipping movement.");
+      delay(1000); // Brief pause 
+    }
+  }
+  Serial.println("\n===== Test Complete =====");
+  Serial.println("Returning to home position..."); 
+  moveShoulderInverse(90);
+  delay(500);
+  moveElbowInverse(90);
+  Serial.println("Test sequence finished!");
+}
+
+void moveShoulderInverse(int theta1){
+  int currentAngleShoulder = (int)currentAngles[1];
+  if (theta1 > currentAngleShoulder){
+    for(int i = currentAngleShoulder; i <= theta1; i += 3){
+      setShoulderAngle(i);  
+      Serial.print("Current Angle = ");
+      Serial.println(i);
+      delay(15);
+    }
+    currentAngles[1] = theta1;
+  } else if(theta1 < currentAngleShoulder){
+    for(int i = currentAngleShoulder; i >= theta1; i -= 3){
+      setShoulderAngle(i);  
+      Serial.print("Current Angle = ");
+      Serial.println(i);
+      delay(15);
+    }
+    currentAngles[1] = theta1;
+  }  
+}
+
+void moveElbowInverse(int theta2){
+  int currentAngleElbow = (int)currentAngles[2]; 
+  if(theta2 > currentAngleElbow){
+    for(int i = currentAngleElbow; i <= theta2; i += 3){
+      setElbowAngle(i);  
+      Serial.print("Current Elbow Angle = ");
+      Serial.println(i);
+      delay(delayBetweenSteps);
+    }
+    currentAngles[2] = theta2;
+  } else if(theta2 < currentAngleElbow){
+    // Move elbow from current position to target position
+    for(int i = currentAngleElbow; i >= theta2; i -= 3){
+      setElbowAngle(i);  
+      Serial.print("Current Elbow Angle = ");
+      Serial.println(i);
+      delay(delayBetweenSteps);
+    }
+    currentAngles[2] = theta2;
+  }
+}
+
+void moveToPosition(double x, double y) {
+  Serial.print("Moving to position (");
+  Serial.print(x);
+  Serial.print(", ");
+  Serial.print(y);
+  Serial.println(")");
+ 
+  int shoulderAngle = calcShoulderAngle(x, y, a1, a2);
+  int elbowAngle = calcElbowAngle(x, y, a1, a2);
+ 
+  if(shoulderAngle != -1 && elbowAngle != -1) {
+    Serial.print("Calculated shoulder angle: ");
+    Serial.println(shoulderAngle);
+    Serial.print("Calculated elbow angle: ");
+    Serial.println(elbowAngle);
+   
+    moveShoulderInverse(shoulderAngle);
+    moveElbowInverse(elbowAngle);
+   
+    Serial.println("Movement complete!");
+  } else {
+    Serial.println("Position not reachable!");
+  }
+}
